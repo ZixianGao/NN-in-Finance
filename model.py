@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import lightgbm as lgb
 #from models.s4.s4 import S4Block as S4  # Can use full version instead of minimal S4D standalone below
 #from models.s4.s4d import S4D
 
@@ -151,4 +152,35 @@ class S4Model(nn.Module):
         x = self.decoder(x)  # (B, d_model) -> (B, d_output)
 
         return x
-    
+
+def loading_lightgmb(file_name, args):
+    return lgb.Booster(model_file=file_name)
+
+def loading_transformer(file_name, args):
+    model = transMODEL(args.nvars,args.hidden_size)
+    model.load_state_dict(torch.load(file_name))
+    return model
+
+def loading_lstm(file_name, args):
+    model = lstmMODEL(args.nvars,args.hidden_size)
+    model.load_state_dict(torch.load(file_name))
+    return model
+
+LOADING_FUNC_MAPPING = {
+    'lightgbm': loading_lightgmb,
+    'transformer': loading_transformer,
+    'lstm': loading_lstm
+}
+
+class EnsambleModel(nn.Module):
+    def __init__(self, ensamble_models, ensamble_ckpt, args, device, 
+                 ensamble_style, manual_weight) -> None:
+        super().__init__()
+        self.models = [LOADING_FUNC_MAPPING[mm](mp, args) for mm, mp in zip(ensamble_models, ensamble_ckpt)]
+        self.models = [mm.to(device) if hasattr(mm, 'to') else mm for mm in self.models]
+
+        if ensamble_style == 'manual_weight':
+            self.manual_weight = manual_weight
+
+    def forward(self, x):
+        pass

@@ -12,6 +12,7 @@ import random
 import argparse
 import pathlib
 import lightgbm as lgb
+import time
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -234,25 +235,28 @@ def training_epoch(train_data, test_data, batch_size, epoch_idx, device, model, 
 
 def training_fold(fold_idx, data, augment_data, features, args):
     augment_names = ['rev_data', 'shift_10_data', 'shift_rev_10_data']
-
+    s_time = time.time()
     whole_data_size = len(data)
     training_end_idx = int(whole_data_size * (INITIAL_DATA_RATIO + FOLD_RATIO_STEP * fold_idx)) - 10
     testing_end_idx = min(whole_data_size, int(whole_data_size * (INITIAL_DATA_RATIO + FOLD_RATIO_STEP * (fold_idx + 1))))
     train_data, test_data = data[: training_end_idx], data[training_end_idx: testing_end_idx]
+    print(f"Time for data splitting: {time.time()- s_time}")
     # augment_training = augment_data[: training_end_idx]
     augment_training = {}
     for key in augment_data:
         augment_training[key] = augment_data[key][: training_end_idx]
-
+    s_time = time.time()
     for feature in features:
         train_data, std, min_val, max_val, q001, q999 = normal_feature(train_data, feature)
         test_data = normal_test_feature(test_data, feature, std, min_val, max_val, q001, q999)
     for name in augment_names:
         for feature in features:
             augment_training[name], _, _, _, _, _ = normal_feature(augment_training[name], feature)
+    print(f"Time for data normalization: {time.time()- s_time}")
     augment_training = data_set_concat(augment_training, augment_names, features+['y'])
     augment_training = pl.concat([train_data[features+['y']], augment_training])
 
+    s_time = time.time()
     if args.model == 'lightgbm':
         new_data = (augment_training[features], augment_training['y'], test_data)
     else:
@@ -266,7 +270,7 @@ def training_fold(fold_idx, data, augment_data, features, args):
         model = lstmMODEL(args.nvars,args.hidden_size).to(DEVICE)
     elif args.model == "lightgbm":
         model = lgb.LGBMRegressor(num_leaves=14, max_depth=4, n_jobs = 14)
-    
+    print(f"Time for model creation: {time.time()- s_time}")
     # path create
     ckpt_path = pathlib.Path(args.ckpt_cache)
     ckpt_path.mkdir(exist_ok=True)
@@ -282,8 +286,8 @@ def training_fold(fold_idx, data, augment_data, features, args):
         train_pred = model.predict(new_data[0])
         test_pred = model.predict(new_data[2][features])
 
-        Tool.evalation(train_pred, new_train_target, "Train")
-        result = Tool.evalation(test_pred, test_data['y'], "Test")
+        Tool.evalation(train_pred, new_data[1], "Train")
+        result = Tool.evalation(test_pred, new_data[2]['y'], "Test")
         return result
     else:
         optimizer = optim.Adam(model.parameters(), lr=args.learning_rate,weight_decay=args.weight_decay)
@@ -316,7 +320,7 @@ def parser_aug():
     parser.add_argument('--individual', type=int, default=0, help='individual head; True 1 False 0')
     parser.add_argument('--target_window', type=int, default=96, help='prediction sequence length')
     parser.add_argument('--class_num', type=int, default=1, help='number of classe')
-    parser.add_argument('--model', default="lightgbm", choices=['transformer','lstm','rnn','S4',"TCN",'lightgbm','mlp'],type=str, help='type of model')
+    parser.add_argument('--model', default="lightgbm", choices=['transformer','lstm','rnn','S4',"TCN",'lightgbm','mlp', 'ensamble'],type=str, help='type of model')
     parser.add_argument('--learning_rate', default=1e-5, type=float, help='Learning rate')
     parser.add_argument('--weight_decay', default=1e-5, type=float, help='Weight decay')
     parser.add_argument('--epochs', default=10, type=int, help='Training epochs')
@@ -346,18 +350,19 @@ def parser_aug():
     parser.add_argument('--fold_idx', default=2, type=int, help='the time fold index')
     parser.add_argument('--ckpt_cache', type=str, default='models')
     parser.add_argument('--window_size', default=10, type=int)
+    parser.add_argument('--ensamble_models',nargs='+',type=str, default=['transformers', 'lstm', 'lightgbm'])
     args = parser.parse_args()
     return args
 
 if __name__ == "__main__":
 
     args = parser_aug()
-
+    s_time = time.time()
     set_random_seed(1)
     data = pl.read_csv('data.csv')
     augment_data, aug_features, aug_features_flat = get_augment_data(data)
     data, features, art_targets = get_features(data)
-
+    print(f"Loading data: {time.time()-s_time}")
     training_fold(args.fold_idx, data, augment_data, features, args)
 
 
