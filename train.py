@@ -6,7 +6,7 @@ import torch
 import numpy as np
 from tqdm import tqdm
 from TCnet_model.ModernTCN import ModernTCN
-from model import lstmMODEL,transMODEL,rnnMODEL,S4Model,mlp
+from model import lstmMODEL,transMODEL,rnnMODEL,S4Model,mlp, EnsambleModel
 from feature_engineer import *
 import random
 import argparse
@@ -172,6 +172,34 @@ def get_four_stage_dataloader(data, agument_data, batch_size, features, augfeatu
     else:
         return train_loader, test_loader
 
+def eval_epoch(train_data, test_data, batch_size, epoch_idx, device, model, optimizer, features):
+    _, test_loader = get_data_loader(train_data, test_data, batch_size, features)
+    with torch.no_grad():
+        final_targets = []
+        final_outputs = []
+        t_bar = tqdm(enumerate(test_loader))
+        for i,batch in t_bar:
+
+            features, labels = batch
+            test_features,test_labels = features.to(device), labels.to(device)
+
+            outputs = model(train_features)
+            
+
+            outputs = model(test_features)
+            targets = test_labels.detach().cpu().numpy()
+            output = outputs.detach().cpu().numpy()
+
+            final_targets.append(targets)
+            final_outputs.append(output)
+
+            t_bar.set_description(f"Batch: {i}")
+
+        final_targets = np.concatenate(final_targets).squeeze()
+        final_outputs = np.concatenate(final_outputs).squeeze() 
+        result = Tool.evalation(final_outputs,final_targets, 'Test')
+    return result, model
+
 def training_epoch(train_data, test_data, batch_size, epoch_idx, device, model, optimizer, features):
     train_loader, test_loader = get_data_loader(train_data, test_data, batch_size, features)
     train_targets = []
@@ -270,6 +298,9 @@ def training_fold(fold_idx, data, augment_data, features, args):
         model = lstmMODEL(args.nvars,args.hidden_size).to(DEVICE)
     elif args.model == "lightgbm":
         model = lgb.LGBMRegressor(num_leaves=14, max_depth=4, n_jobs = 14)
+    elif args.model == "ensamble":
+        model = EnsambleModel(args.ensamble_models, args.ensamble_ckpts, args, DEVICE, args.ensamble_style, args.manual_weights)
+
     print(f"Time for model creation: {time.time()- s_time}")
     # path create
     ckpt_path = pathlib.Path(args.ckpt_cache)
@@ -290,20 +321,23 @@ def training_fold(fold_idx, data, augment_data, features, args):
         result = Tool.evalation(test_pred, new_data[2]['y'], "Test")
         return result
     else:
-        optimizer = optim.Adam(model.parameters(), lr=args.learning_rate,weight_decay=args.weight_decay)
-        best_result = None
-        
-        for epoch in range(args.epochs):
-            result, model = training_epoch(
-                new_data[0], new_data[1], args.batch_size, epoch, DEVICE, model, optimizer, features
-            )
-            if best_result is None:
-                best_result = result
-                torch.save(model.state_dict(), ckpt_model_path.joinpath("model_best.pth"))
-            elif result['R2'] > best_result['R2']:
-                torch.save(model.state_dict(), ckpt_model_path.joinpath("model_best.pth"))
-                best_result = result
-        return best_result
+        if args.manual_style == 'manual':
+            pass
+        else:
+            optimizer = optim.Adam(model.parameters(), lr=args.learning_rate,weight_decay=args.weight_decay)
+            best_result = None
+            
+            for epoch in range(args.epochs):
+                result, model = training_epoch(
+                    new_data[0], new_data[1], args.batch_size, epoch, DEVICE, model, optimizer, features
+                )
+                if best_result is None:
+                    best_result = result
+                    torch.save(model.state_dict(), ckpt_model_path.joinpath("model_best.pth"))
+                elif result['R2'] > best_result['R2']:
+                    torch.save(model.state_dict(), ckpt_model_path.joinpath("model_best.pth"))
+                    best_result = result
+            return best_result
 
 def parser_aug():
     parser = argparse.ArgumentParser(description='Training')
@@ -351,6 +385,9 @@ def parser_aug():
     parser.add_argument('--ckpt_cache', type=str, default='models')
     parser.add_argument('--window_size', default=10, type=int)
     parser.add_argument('--ensamble_models',nargs='+',type=str, default=['transformers', 'lstm', 'lightgbm'])
+    parser.add_argument('--ensamble_ckpts',nargs='+',type=str, default=[])
+    parser.add_argument('--ensamble_style', type=str, default='manual')
+    parser.add_argument('--manual_weights',nargs='+',type=float, default=[1, 1, 1])
     args = parser.parse_args()
     return args
 

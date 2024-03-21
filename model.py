@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import lightgbm as lgb
+import numpy as np
 #from models.s4.s4 import S4Block as S4  # Can use full version instead of minimal S4D standalone below
 #from models.s4.s4d import S4D
 
@@ -153,8 +154,18 @@ class S4Model(nn.Module):
 
         return x
 
+class lgbModule(nn.Module):
+    def __init__(self, lgb_model) -> None:
+        super().__init__()
+        self.lgb_model = lgb_model
+
+    def forward(self, x):
+        lgb_input = x.cpu().numpy()
+        pred = self.lgb_model.predict(lgb_input)
+        return torch.from_numpy(pred).to(x.device)
+
 def loading_lightgmb(file_name, args):
-    return lgb.Booster(model_file=file_name)
+    return lgbModule(lgb.Booster(model_file=file_name))
 
 def loading_transformer(file_name, args):
     model = transMODEL(args.nvars,args.hidden_size)
@@ -176,11 +187,21 @@ class EnsambleModel(nn.Module):
     def __init__(self, ensamble_models, ensamble_ckpt, args, device, 
                  ensamble_style, manual_weight) -> None:
         super().__init__()
-        self.models = [LOADING_FUNC_MAPPING[mm](mp, args) for mm, mp in zip(ensamble_models, ensamble_ckpt)]
+        self.models = {mm: LOADING_FUNC_MAPPING[mm](mp, args) for mm, mp in zip(ensamble_models, ensamble_ckpt)}
         self.models = [mm.to(device) if hasattr(mm, 'to') else mm for mm in self.models]
 
         if ensamble_style == 'manual_weight':
-            self.manual_weight = manual_weight
+            manual_weight = np.mean(manual_weight).tolist()
+            self.manual_weight = {mm: mw for mm, mw in zip(ensamble_models, manual_weight)}
+        # self.requires_grad_(False)
+        self.models = [mm.requires_grad_(False) if hasattr(mm, 'requires_grad_') else mm for mm in self.models] # frozen models
 
     def forward(self, x):
-        pass
+        default_weight = 1/len(self.models)
+        ret = None
+        for model in self.models:
+            if ret == None:
+                ret = model(x) * default_weight
+            else:
+                ret += model(x) * default_weight
+        return ret
