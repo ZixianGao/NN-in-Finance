@@ -11,6 +11,7 @@ from feature_engineer import *
 import random
 import argparse
 import pathlib
+import lightgbm as lgb
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -235,7 +236,7 @@ def training_fold(fold_idx, data, augment_data, features, args):
     augment_names = ['rev_data', 'shift_10_data', 'shift_rev_10_data']
 
     whole_data_size = len(data)
-    training_end_idx = int(whole_data_size * (INITIAL_DATA_RATIO + FOLD_RATIO_STEP * fold_idx)) - 1
+    training_end_idx = int(whole_data_size * (INITIAL_DATA_RATIO + FOLD_RATIO_STEP * fold_idx)) - 10
     testing_end_idx = min(whole_data_size, int(whole_data_size * (INITIAL_DATA_RATIO + FOLD_RATIO_STEP * (fold_idx + 1))))
     train_data, test_data = data[: training_end_idx], data[training_end_idx: testing_end_idx]
     # augment_training = augment_data[: training_end_idx]
@@ -264,7 +265,7 @@ def training_fold(fold_idx, data, augment_data, features, args):
     elif args.model == "lstm" : 
         model = lstmMODEL(args.nvars,args.hidden_size).to(DEVICE)
     elif args.model == "lightgbm":
-        model = lgb.LGBMRegressor(num_leaves=14, max_depth=4, n_jobs = 10)
+        model = lgb.LGBMRegressor(num_leaves=14, max_depth=4, n_jobs = 14)
     
     # path create
     ckpt_path = pathlib.Path(args.ckpt_cache)
@@ -276,7 +277,8 @@ def training_fold(fold_idx, data, augment_data, features, args):
     if args.model == 'lightgbm':
         print('Training lightgbm')
         gbm = model.fit(new_data[0], new_data[1])
-        gbm.save_model(ckpt_model_path.joinpath(f'#model_lgb{i+1}.json'))
+        
+        gbm.booster_.save_model(ckpt_model_path.joinpath(f'#model_lgb{fold_idx+1}.json'))
         train_pred = model.predict(new_data[0])
         test_pred = model.predict(new_data[2][features])
 
@@ -293,9 +295,9 @@ def training_fold(fold_idx, data, augment_data, features, args):
             )
             if best_result is None:
                 best_result = result
-                torch.save(model.named_parameters(), ckpt_model_path.joinpath("model_best.pth"))
+                torch.save(model.state_dict(), ckpt_model_path.joinpath("model_best.pth"))
             elif result['R2'] > best_result['R2']:
-                torch.save(model.named_parameters(), ckpt_model_path.joinpath("model_best.pth"))
+                torch.save(model.state_dict(), ckpt_model_path.joinpath("model_best.pth"))
                 best_result = result
         return best_result
 
