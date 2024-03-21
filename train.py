@@ -10,50 +10,13 @@ from model import lstmMODEL,transMODEL,rnnMODEL,S4Model,mlp
 from feature_engineer import *
 import random
 import argparse
-DEVICE = torch.device("cuda:3")
+import pathlib
 
-parser = argparse.ArgumentParser(description='Training')
-parser.add_argument('--task_name', default="classification", type=str, help='type of task')
-parser.add_argument('--stem_ratio', type=int, default=6, help='stem ratio')
-parser.add_argument('--downsample_ratio', type=int, default=2, help='downsample_ratio')
-parser.add_argument('--dims', nargs='+',type=int, default=[32,64], help='dmodels in each stage')#32 64
-parser.add_argument('--dw_dims', nargs='+',type=int, default=[256,256,256,256], help='dw dims in dw conv in each stage')
-parser.add_argument('--revin', type=int, default=1, help='RevIN; True 1 False 0')
-parser.add_argument('--affine', type=int, default=0, help='RevIN-affine; True 1 False 0')
-parser.add_argument('--subtract_last', type=int, default=0, help='0: subtract mean; 1: subtract last')
-parser.add_argument('--freq', type=str, default='h')
-parser.add_argument('--seq_len', type=int, default=96, help='input sequence length')
-parser.add_argument('--individual', type=int, default=0, help='individual head; True 1 False 0')
-parser.add_argument('--target_window', type=int, default=96, help='prediction sequence length')
-parser.add_argument('--class_num', type=int, default=1, help='number of classe')
-parser.add_argument('--model', default="lightgbm", choices=['transformer','lstm','rnn','S4',"TCN",'lightgbm','mlp'],type=str, help='type of model')
-parser.add_argument('--learning_rate', default=1e-5, type=float, help='Learning rate')
-parser.add_argument('--weight_decay', default=1e-5, type=float, help='Weight decay')
-parser.add_argument('--epochs', default=10, type=int, help='Training epochs')
-parser.add_argument('--batch_size', default=64, type=int, help='Batch size')
-parser.add_argument('--n_layers', default=1, type=int, help='Number of layers')
-# parser.add_argument('--model', default="rnn", choices=['transformer','lstm','rnn','S4'],type=str, help='type of model')
-parser.add_argument('--input_feature_size', default=1, type=int, help='input_feature_size')
-parser.add_argument('--input_size_mlp', default=185, type=int, help='input_size_mlp')
-parser.add_argument('--root_path', default="data.csv", type=str, help='data_path')
-parser.add_argument('--ffn_ratio', default=1, type=int)
-parser.add_argument('--patch_size', default=8, type=int)
-parser.add_argument('--patch_stride', default=4, type=int)
-parser.add_argument('--num_blocks', default=[1,1], type=int)
-parser.add_argument('--large_size', default=[13,13], type=int)
-parser.add_argument('--small_size', default=[5,5], type=int)
-# parser.add_argument('--dims', default=32, type=int)
-parser.add_argument('--head_dropout', default=0.0, type=float)
-parser.add_argument('--class_dropout', default=0.0, type=float)
-parser.add_argument('--dropout', default=0.1, type=float, help='Dropout')
-parser.add_argument('--itr', default=1, type=int)
-parser.add_argument('--patience', default=10, type=int)
-parser.add_argument('--dex', default="Exp", type=str)
-parser.add_argument('--use_multi_scale', default=False, type=bool)
-parser.add_argument('--nvars', type=int, default=185, help='encoder input size')
-parser.add_argument('--small_kernel_merged', type=bool, default=False, help='small_kernel has already merged or not')
-parser.add_argument('--hidden_size', default=60, type=int, help='hidden_size')
-args = parser.parse_args()
+DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+INITIAL_DATA_RATIO = 0.4
+FOLD_RATIO_STEP = 0.20
+N_TIME_FOLD = 4
 
 def set_random_seed(seed: int):
     torch.backends.cudnn.benchmark = False
@@ -100,109 +63,303 @@ def get_data_loader(train_data,test_data,batch_size,features):
 
     return train_loader,test_loader
 
-def get_four_stage_dataloader(data,agument_data,batch_size,features,augfeatures):
+def get_four_stage_dataloader(data, agument_data, batch_size, features, augfeatures, fold_idx, args):
     augment_names = ['rev_data', 'shift_10_data', 'shift_rev_10_data']
 
     #stage1:
-    train_temp_data1, _ = train_test_split(data, test_size=0.45, shuffle=False)
-    train_data_1, test_data_1 = train_test_split(train_temp_data1, test_size=0.15, shuffle=False)
-    augment_temp_data1,_ = data_set_split (agument_data,augment_names,0.45)
-    augment_train_data1,_ = data_set_split (augment_temp_data1,augment_names,0.15) 
-    for feature in features:
-        train_data_1, std1, min1, max1,q001_1,q999_1 = normal_feature(train_data_1, feature)
-        test_data_1 = normal_test_feature(test_data_1, feature,  std1, min1, max1,q001_1,q999_1)
-    for name in augment_names:
+    if fold_idx == 0:
+        train_temp_data1, _ = train_test_split(data, test_size=0.45, shuffle=False)
+        train_data_1, test_data_1 = train_test_split(train_temp_data1, test_size=0.15, shuffle=False)
+        augment_temp_data1,_ = data_set_split (agument_data,augment_names,0.45)
+        augment_train_data1,_ = data_set_split (augment_temp_data1,augment_names,0.15) 
         for feature in features:
-            augment_train_data1[name], _,_,_,_,_ = normal_feature(augment_train_data1[name], feature)
-    augment_train_data1 = data_set_concat(augment_train_data1, augment_names, features+['y'])
+            train_data_1, std1, min1, max1,q001_1,q999_1 = normal_feature(train_data_1, feature)
+            test_data_1 = normal_test_feature(test_data_1, feature,  std1, min1, max1,q001_1,q999_1)
+        for name in augment_names:
+            for feature in features:
+                augment_train_data1[name], _,_,_,_,_ = normal_feature(augment_train_data1[name], feature)
+        augment_train_data1 = data_set_concat(augment_train_data1, augment_names, features+['y'])
 
-    augment_train_data1 = pl.concat([train_data_1[features+['y']], augment_train_data1])
-    if args.model == 'lightgbm':
-        new_train_data1 = augment_train_data1[features]
-        new_train_target1 = augment_train_data1['y']
-        new_test_data1 = test_data_1
-    else:
-    # train_data_1,test_data_1 = test_normalize(train_data_1, test_data_1,features)
-        train_loader1,test_loader1 = get_data_loader(augment_train_data1, test_data_1,batch_size,features)
-    del train_temp_data1, augment_temp_data1, augment_train_data1,train_data_1,test_data_1
+        augment_train_data1 = pl.concat([train_data_1[features+['y']], augment_train_data1])
+        if args.model == 'lightgbm':
+            new_train_data = augment_train_data1[features]
+            new_train_target = augment_train_data1['y']
+            new_test_data = test_data_1
+        else:
+        # train_data_1,test_data_1 = test_normalize(train_data_1, test_data_1,features)
+            train_loader,test_loader = get_data_loader(augment_train_data1, test_data_1,batch_size,features)
+        del train_temp_data1, augment_temp_data1, augment_train_data1,train_data_1,test_data_1
+        # return train_loader,test_loader
+    elif fold_idx == 1:
 
     #stage2:
-    train_temp_data2, _ = train_test_split(data, test_size=0.3, shuffle=False)
-    train_data_2, test_data_2 = train_test_split(train_temp_data2, test_size=0.15, shuffle=False)
-    augment_temp_data2,_ = data_set_split (agument_data,augment_names,0.3)
-    augment_train_data2,_ = data_set_split (augment_temp_data2,augment_names,0.15)   
-    for feature in features:
-        train_data_2, std2, min2, max2,q001_2,q999_2  = normal_feature(train_data_2, feature)
-        test_data_2 = normal_test_feature(test_data_2, feature,  std2, min2, max2,q001_2,q999_2 )
-
-    for name in augment_names:
+        train_temp_data2, _ = train_test_split(data, test_size=0.3, shuffle=False)
+        train_data_2, test_data_2 = train_test_split(train_temp_data2, test_size=0.15, shuffle=False)
+        augment_temp_data2,_ = data_set_split (agument_data,augment_names,0.3)
+        augment_train_data2,_ = data_set_split (augment_temp_data2,augment_names,0.15)   
         for feature in features:
-            augment_train_data2[name], _,_,_,_,_ = normal_feature(augment_train_data2[name], feature)
-    augment_train_data2 = data_set_concat(augment_train_data2, augment_names, features+['y'])
-    augment_train_data2 = pl.concat([train_data_2[features+['y']], augment_train_data2])
-    if args.model == 'lightgbm':
-        new_train_data2 = augment_train_data2[features]
-        new_train_target2 = augment_train_data2['y']
-        new_test_data2 = test_data_2
-    else:
-    # train_data_1,test_data_1 = test_normalize(train_data_1, test_data_1,features)
-        train_loader2,test_loader2 = get_data_loader(augment_train_data2, test_data_2,batch_size,features)
-    del train_temp_data2, augment_temp_data2, augment_train_data2,train_data_2,test_data_2
+            train_data_2, std2, min2, max2,q001_2,q999_2  = normal_feature(train_data_2, feature)
+            test_data_2 = normal_test_feature(test_data_2, feature,  std2, min2, max2,q001_2,q999_2 )
+
+        for name in augment_names:
+            for feature in features:
+                augment_train_data2[name], _,_,_,_,_ = normal_feature(augment_train_data2[name], feature)
+        augment_train_data2 = data_set_concat(augment_train_data2, augment_names, features+['y'])
+        augment_train_data2 = pl.concat([train_data_2[features+['y']], augment_train_data2])
+        if args.model == 'lightgbm':
+            new_train_data = augment_train_data2[features]
+            new_train_target = augment_train_data2['y']
+            new_test_data = test_data_2
+        else:
+        # train_data_1,test_data_1 = test_normalize(train_data_1, test_data_1,features)
+            train_loader,test_loader = get_data_loader(augment_train_data2, test_data_2,batch_size,features)
+        del train_temp_data2, augment_temp_data2, augment_train_data2,train_data_2,test_data_2
+    elif fold_idx == 2:
 
     #stage3:
-    train_temp_data3, _ = train_test_split(data, test_size=0.15, shuffle=False)
-    train_data_3, test_data_3 = train_test_split(train_temp_data3, test_size=0.15, shuffle=False)
-    augment_temp_data3,_ = data_set_split (agument_data,augment_names,0.15)
-    augment_train_data3,_ = data_set_split (augment_temp_data3,augment_names,0.15)   
-    for feature in features:
-        train_data_3, std3, min3, max3,q001_3,q999_3  = normal_feature(train_data_3, feature)
-        test_data_3 = normal_test_feature(test_data_3, feature,  std3, min3, max3,q001_3,q999_3 )
-
-    for name in augment_names:
+        train_temp_data3, _ = train_test_split(data, test_size=0.15, shuffle=False)
+        train_data_3, test_data_3 = train_test_split(train_temp_data3, test_size=0.15, shuffle=False)
+        augment_temp_data3,_ = data_set_split (agument_data,augment_names,0.15)
+        augment_train_data3,_ = data_set_split (augment_temp_data3,augment_names,0.15)   
         for feature in features:
-            augment_train_data3[name], _,_,_,_,_ = normal_feature(augment_train_data3[name], feature)
-    augment_train_data3 = data_set_concat(augment_train_data3, augment_names, features+['y'])
-    augment_train_data3 = pl.concat([train_data_3[features+['y']], augment_train_data3])
-    if args.model == 'lightgbm':
-        new_train_data3 = augment_train_data3[features]
-        new_train_target3 = augment_train_data3['y']
-        new_test_data3 = test_data_3
+            train_data_3, std3, min3, max3,q001_3,q999_3  = normal_feature(train_data_3, feature)
+            test_data_3 = normal_test_feature(test_data_3, feature,  std3, min3, max3,q001_3,q999_3 )
+
+        for name in augment_names:
+            for feature in features:
+                augment_train_data3[name], _,_,_,_,_ = normal_feature(augment_train_data3[name], feature)
+        augment_train_data3 = data_set_concat(augment_train_data3, augment_names, features+['y'])
+        augment_train_data3 = pl.concat([train_data_3[features+['y']], augment_train_data3])
+        if args.model == 'lightgbm':
+            new_train_data = augment_train_data3[features]
+            new_train_target = augment_train_data3['y']
+            new_test_data = test_data_3
+        else:
+        # train_data_1,test_data_1 = test_normalize(train_data_1, test_data_1,features)
+            train_loader,test_loader = get_data_loader(augment_train_data3, test_data_3,batch_size,features)
+        del train_temp_data3, augment_temp_data3, augment_train_data3,train_data_3,test_data_3
     else:
-    # train_data_1,test_data_1 = test_normalize(train_data_1, test_data_1,features)
-        train_loader3,test_loader3 = get_data_loader(augment_train_data3, test_data_3,batch_size,features)
-    del train_temp_data3, augment_temp_data3, augment_train_data3,train_data_3,test_data_3
 
     #stage4:
-    train_data_4,test_data_4 = train_test_split(data, test_size=0.15, shuffle=False)
-    augment_train_data4,_= data_set_split (augment_data,augment_names,0.15) 
+        train_data_4,test_data_4 = train_test_split(data, test_size=0.15, shuffle=False)
+        augment_train_data4,_= data_set_split (augment_data,augment_names,0.15) 
+
+        for feature in features:
+            train_data_4, std4, min4, max4,q001_4,q999_4  = normal_feature(train_data_4, feature)
+        
+            test_data_4 = normal_test_feature(test_data_4, feature,  std4, min4, max4,q001_4,q999_4 )
+
+        for name in augment_names:
+            for feature in features:
+                augment_train_data4[name], _,_,_,_,_ = normal_feature(augment_train_data4[name], feature)   
+        augment_train_data4 = data_set_concat(augment_train_data4, augment_names, features+['y'])
+        augment_train_data4 = pl.concat([train_data_4[features+['y']], augment_train_data4])
+        if args.model == 'lightgbm':
+            new_train_data = augment_train_data4[features]
+            new_train_target = augment_train_data4['y']
+            new_test_data = test_data_4
+        else:
+        # train_data_1,test_data_1 = test_normalize(train_data_1, test_data_1,features)
+            train_loader,test_loader = get_data_loader(augment_train_data4, test_data_4,batch_size,features)
+        del augment_train_data4,train_data_4,test_data_4
+    
+    
+
+    if args.model == 'lightgbm':
+        return new_train_data, new_train_target, new_test_data
+    else:
+        return train_loader, test_loader
+
+def training_epoch(train_data, test_data, batch_size, epoch_idx, device, model, optimizer, features):
+    train_loader, test_loader = get_data_loader(train_data, test_data, batch_size, features)
+    train_targets = []
+    train_outputs = []
+    bar = tqdm(enumerate(train_loader))
+    result = None
+    for i, batch in bar:
+        features, labels = batch
+        train_features,train_labels = features.to(device), labels.to(device)
+        train_features,train_labels = train_features.float(), train_labels.float()
+        outputs = model(train_features)
+        loss = rmse_loss(outputs.squeeze(), train_labels)
+                
+
+        optimizer.zero_grad()
+
+
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(parameters=model.parameters(), max_norm=1)
+        optimizer.step()
+    
+
+        label = train_labels.detach().cpu().numpy()
+        pred = outputs.detach().cpu().numpy()
+
+        train_targets.append(label)
+        train_outputs.append(pred)
+
+        bar.set_description(f"epoch: {epoch_idx}, Batch: {i}, loss: {loss.detach().cpu().item():.4f}")
+    train_targets = np.concatenate(train_targets).squeeze()
+    train_outputs = np.concatenate(train_outputs).squeeze() 
+
+    print("epoch:{}".format(epoch_idx+1))
+    Tool.evalation(train_outputs, train_targets, 'Train')
+
+    with torch.no_grad():
+        final_targets = []
+        final_outputs = []
+        t_bar = tqdm(enumerate(test_loader))
+        for i,batch in t_bar:
+
+            features, labels = batch
+            test_features,test_labels = features.to(device), labels.to(device)
+
+            outputs = model(train_features)
+            
+
+            outputs = model(test_features)
+            targets = test_labels.detach().cpu().numpy()
+            output = outputs.detach().cpu().numpy()
+
+            final_targets.append(targets)
+            final_outputs.append(output)
+
+            t_bar.set_description(f"Batch: {i}")
+
+        final_targets = np.concatenate(final_targets).squeeze()
+        final_outputs = np.concatenate(final_outputs).squeeze() 
+        result = Tool.evalation(final_outputs,final_targets, 'Test')
+    return result, model
+
+def training_fold(fold_idx, data, augment_data, features, args):
+    augment_names = ['rev_data', 'shift_10_data', 'shift_rev_10_data']
+
+    whole_data_size = len(data)
+    training_end_idx = int(whole_data_size * (INITIAL_DATA_RATIO + FOLD_RATIO_STEP * fold_idx)) - 1
+    testing_end_idx = min(whole_data_size, int(whole_data_size * (INITIAL_DATA_RATIO + FOLD_RATIO_STEP * (fold_idx + 1))))
+    train_data, test_data = data[: training_end_idx], data[training_end_idx: testing_end_idx]
+    # augment_training = augment_data[: training_end_idx]
+    augment_training = {}
+    for key in augment_data:
+        augment_training[key] = augment_data[key][: training_end_idx]
 
     for feature in features:
-        train_data_4, std4, min4, max4,q001_4,q999_4  = normal_feature(train_data_4, feature)
-    
-        test_data_4 = normal_test_feature(test_data_4, feature,  std4, min4, max4,q001_4,q999_4 )
-
+        train_data, std, min_val, max_val, q001, q999 = normal_feature(train_data, feature)
+        test_data = normal_test_feature(test_data, feature, std, min_val, max_val, q001, q999)
     for name in augment_names:
         for feature in features:
-            augment_train_data4[name], _,_,_,_,_ = normal_feature(augment_train_data4[name], feature)   
-    augment_train_data4 = data_set_concat(augment_train_data4, augment_names, features+['y'])
-    augment_train_data4 = pl.concat([train_data_4[features+['y']], augment_train_data4])
+            augment_training[name], _, _, _, _, _ = normal_feature(augment_training[name], feature)
+    augment_training = data_set_concat(augment_training, augment_names, features+['y'])
+    augment_training = pl.concat([train_data[features+['y']], augment_training])
+
     if args.model == 'lightgbm':
-        new_train_data4 = augment_train_data4[features]
-        new_train_target4 = augment_train_data4['y']
-        new_test_data4 = test_data_4
+        new_data = (augment_training[features], augment_training['y'], test_data)
     else:
-    # train_data_1,test_data_1 = test_normalize(train_data_1, test_data_1,features)
-        train_loader4,test_loader4 = get_data_loader(augment_train_data4, test_data_4,batch_size,features)
-    del augment_train_data4,train_data_4,test_data_4
+        new_data = (augment_training, test_data)
+
+    if args.model == "transformer":
+        model = transMODEL(args.nvars,args.hidden_size).to(DEVICE)
+    elif args.model == "rnn" : 
+        model = rnnMODEL(args.nvars,args.hidden_size).to(DEVICE)
+    elif args.model == "lstm" : 
+        model = lstmMODEL(args.nvars,args.hidden_size).to(DEVICE)
+    elif args.model == "lightgbm":
+        model = lgb.LGBMRegressor(num_leaves=14, max_depth=4, n_jobs = 10)
+    
+    # path create
+    ckpt_path = pathlib.Path(args.ckpt_cache)
+    ckpt_path.mkdir(exist_ok=True)
+
+    ckpt_model_path = ckpt_path.joinpath(args.model)
+    ckpt_model_path.mkdir(exist_ok=True)
+
     if args.model == 'lightgbm':
-        return new_train_data1,new_train_data2,new_train_data3,new_train_data4,new_train_target1,new_train_target2,new_train_target3,new_train_target4,new_test_data1,new_test_data2,new_test_data3,new_test_data4
-    return train_loader1,test_loader1,train_loader2,test_loader2,train_loader3,test_loader3,train_loader4,test_loader4
+        print('Training lightgbm')
+        gbm = model.fit(new_data[0], new_data[1])
+        gbm.save_model(ckpt_model_path.joinpath(f'#model_lgb{i+1}.json'))
+        train_pred = model.predict(new_data[0])
+        test_pred = model.predict(new_data[2][features])
+
+        Tool.evalation(train_pred, new_train_target, "Train")
+        result = Tool.evalation(test_pred, test_data['y'], "Test")
+        return result
+    else:
+        optimizer = optim.Adam(model.parameters(), lr=args.learning_rate,weight_decay=args.weight_decay)
+        best_result = None
+        
+        for epoch in range(args.epochs):
+            result, model = training_epoch(
+                new_data[0], new_data[1], args.batch_size, epoch, DEVICE, model, optimizer, features
+            )
+            if best_result is None:
+                best_result = result
+                torch.save(model.named_parameters(), ckpt_model_path.joinpath("model_best.pth"))
+            elif result['R2'] > best_result['R2']:
+                torch.save(model.named_parameters(), ckpt_model_path.joinpath("model_best.pth"))
+                best_result = result
+        return best_result
+
+def parser_aug():
+    parser = argparse.ArgumentParser(description='Training')
+    parser.add_argument('--task_name', default="classification", type=str, help='type of task')
+    parser.add_argument('--stem_ratio', type=int, default=6, help='stem ratio')
+    parser.add_argument('--downsample_ratio', type=int, default=2, help='downsample_ratio')
+    parser.add_argument('--dims', nargs='+',type=int, default=[32,64], help='dmodels in each stage')#32 64
+    parser.add_argument('--dw_dims', nargs='+',type=int, default=[256,256,256,256], help='dw dims in dw conv in each stage')
+    parser.add_argument('--revin', type=int, default=1, help='RevIN; True 1 False 0')
+    parser.add_argument('--affine', type=int, default=0, help='RevIN-affine; True 1 False 0')
+    parser.add_argument('--subtract_last', type=int, default=0, help='0: subtract mean; 1: subtract last')
+    parser.add_argument('--freq', type=str, default='h')
+    parser.add_argument('--seq_len', type=int, default=96, help='input sequence length')
+    parser.add_argument('--individual', type=int, default=0, help='individual head; True 1 False 0')
+    parser.add_argument('--target_window', type=int, default=96, help='prediction sequence length')
+    parser.add_argument('--class_num', type=int, default=1, help='number of classe')
+    parser.add_argument('--model', default="lightgbm", choices=['transformer','lstm','rnn','S4',"TCN",'lightgbm','mlp'],type=str, help='type of model')
+    parser.add_argument('--learning_rate', default=1e-5, type=float, help='Learning rate')
+    parser.add_argument('--weight_decay', default=1e-5, type=float, help='Weight decay')
+    parser.add_argument('--epochs', default=10, type=int, help='Training epochs')
+    parser.add_argument('--batch_size', default=64, type=int, help='Batch size')
+    parser.add_argument('--n_layers', default=1, type=int, help='Number of layers')
+    # parser.add_argument('--model', default="rnn", choices=['transformer','lstm','rnn','S4'],type=str, help='type of model')
+    parser.add_argument('--input_feature_size', default=1, type=int, help='input_feature_size')
+    parser.add_argument('--input_size_mlp', default=185, type=int, help='input_size_mlp')
+    parser.add_argument('--root_path', default="data.csv", type=str, help='data_path')
+    parser.add_argument('--ffn_ratio', default=1, type=int)
+    parser.add_argument('--patch_size', default=8, type=int)
+    parser.add_argument('--patch_stride', default=4, type=int)
+    parser.add_argument('--num_blocks', default=[1,1], type=int)
+    parser.add_argument('--large_size', default=[13,13], type=int)
+    parser.add_argument('--small_size', default=[5,5], type=int)
+    # parser.add_argument('--dims', default=32, type=int)
+    parser.add_argument('--head_dropout', default=0.0, type=float)
+    parser.add_argument('--class_dropout', default=0.0, type=float)
+    parser.add_argument('--dropout', default=0.1, type=float, help='Dropout')
+    parser.add_argument('--itr', default=1, type=int)
+    parser.add_argument('--patience', default=10, type=int)
+    parser.add_argument('--dex', default="Exp", type=str)
+    parser.add_argument('--use_multi_scale', default=False, type=bool)
+    parser.add_argument('--nvars', type=int, default=185, help='encoder input size')
+    parser.add_argument('--small_kernel_merged', type=bool, default=False, help='small_kernel has already merged or not')
+    parser.add_argument('--hidden_size', default=60, type=int, help='hidden_size')
+    parser.add_argument('--fold_idx', default=2, type=int, help='the time fold index')
+    parser.add_argument('--ckpt_cache', type=str, default='models')
+    parser.add_argument('--window_size', default=10, type=int)
+    args = parser.parse_args()
+    return args
 
 if __name__ == "__main__":
+
+    args = parser_aug()
+
     set_random_seed(1)
     data = pl.read_csv('data.csv')
-    augment_data,aug_features,aug_features_flat = get_augment_data(data)
+    augment_data, aug_features, aug_features_flat = get_augment_data(data)
     data, features, art_targets = get_features(data)
+
+    training_fold(args.fold_idx, data, augment_data, features, args)
+
+
+    exit()
     models = []
     if args.model == "lightgbm":
         new_train_data1,new_train_data2,new_train_data3,new_train_data4,new_train_target1,new_train_target2,new_train_target3,new_train_target4,new_test_data1,new_test_data2,new_test_data3,new_test_data4 = get_four_stage_dataloader(data,agument_data=augment_data,batch_size=args.batch_size,features=features,augfeatures=aug_features_flat)
@@ -211,6 +368,7 @@ if __name__ == "__main__":
         lgb_test = [new_test_data1,new_test_data2,new_test_data3,new_test_data4]
         model = lgb.LGBMRegressor(num_leaves=14, max_depth=4)
         models.append(model)
+        
         for i in range(4):
             new_train_data = lgb_train_data[i]
             new_train_target = lgb_train_target[i]
@@ -223,12 +381,12 @@ if __name__ == "__main__":
             print(f"Stage {i+1}")
             #Tool.evalation(train_pred, new_train_target, "Train")
             Tool.evalation(train_pred, new_train_target, "Train")
-            Tool.evalation(test_pred, test_data['y'], "Test")
+            result = Tool.evalation(test_pred, test_data['y'], "Test")
     
     else:
-        #print("111111111")
+
         train_data_loader_1,test_data_loader_1, train_data_loader_2, test_data_loader_2, train_data_loader_3,test_data_loader_3, train_data_loader_4,test_data_loader_4=get_four_stage_dataloader(data,agument_data=augment_data,batch_size=args.batch_size,features=features,augfeatures=aug_features_flat)
-        #print("222222222")
+
         train_dataloaders = [train_data_loader_1, train_data_loader_2, train_data_loader_3, train_data_loader_4]
         test_dataloaders = [test_data_loader_1, test_data_loader_2, test_data_loader_3, test_data_loader_4]
         if args.model == "transformer":

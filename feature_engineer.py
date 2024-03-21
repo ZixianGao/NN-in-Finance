@@ -418,8 +418,7 @@ def get_features(input_data, num=5, is_shift = True):
                     shift_features.append(new_feature)
         features += shift_features
 
-        
-
+    
     data = data.fill_null(0)   
     data = data.fill_nan(0)
     return data, features, targets
