@@ -5,7 +5,7 @@ import torch.optim as optim
 import torch
 import numpy as np
 from tqdm import tqdm
-# from TCnet_model.ModernTCN import ModernTCN
+from TCnet_model.ModernTCN import ModernTCN
 from model import lstmMODEL,transMODEL,rnnMODEL,S4Model,mlp
 from feature_engineer import *
 import random
