@@ -251,6 +251,14 @@ def loading_lstm(file_name, args):
     model.load_state_dict(torch.load(file_name), strict = False)
     return model
 
+def loading_bagging(file_name,args):
+    model= torch.load(file_name)
+    return model
+
+def loading_voting(file_name,args):
+    model= torch.load(file_name)
+    return model
+
 LOADING_FUNC_MAPPING = {
     'lightgbm': loading_lightgmb,
     'transformer': loading_transformer,
