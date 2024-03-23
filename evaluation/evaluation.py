@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from dataset import EvalDataset
 from feature_engineer import *
-from model import EnsambleModel, loading_lstm, loading_transformer,loading_bagging,loading_voting,EnsembleModel,VotingEnsemble,BaggingEnsemble,get_models
+from model import EnsambleModel, loading_lstm, loading_transformer,loading_bagging,loading_voting,EnsembleModel,VotingEnsemble,BaggingEnsemble
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
