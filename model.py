@@ -251,11 +251,11 @@ def loading_lstm(file_name, args):
     model.load_state_dict(torch.load(file_name), strict = False)
     return model
 
-def loading_bagging(file_name,args):
+def loading_bagging(file_name):
     model= torch.load(file_name)
     return model
 
-def loading_voting(file_name,args):
+def loading_voting(file_name):
     model= torch.load(file_name)
     return model
 
