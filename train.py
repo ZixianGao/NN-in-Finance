@@ -6,7 +6,7 @@ import torch
 import numpy as np
 from tqdm import tqdm
 from TCnet_model.ModernTCN import ModernTCN
-from model import lstmMODEL,transMODEL,rnnMODEL,S4Model,mlp, EnsambleModel
+from model import lstmMODEL,transMODEL,rnnMODEL,S4Model,mlp, EnsambleModel, VotingEnsamble
 from feature_engineer import *
 import random
 import argparse
@@ -35,6 +35,7 @@ def set_random_seed(seed: int):
 def r2(y_pred, y_true):
     return 1 - ((y_true - y_pred)**2).sum()/((y_true - y_true.mean())**2).sum()
 def rmse_loss(predictions, targets):
+    predictions = predictions.squeeze()
     mse = torch.mean((predictions - targets)**2)  # Compute Mean Squared Error
     rmse = torch.sqrt(mse+1e-6)  # Compute square root to get RMSE
     return rmse
@@ -307,6 +308,15 @@ def training_fold(fold_idx, data, augment_data, features, args, cache_dir):
         model = lgb.LGBMRegressor(num_leaves=14, max_depth=4, n_jobs = 14)
     elif args.model == "ensamble":
         model = EnsambleModel(args.ensamble_models, args.ensamble_ckpts, args, DEVICE, args.ensamble_style, args.manual_weights)
+    elif args.model == 'voting':
+        model = VotingEnsamble(transMODEL(args.nvars,args.hidden_size).to(DEVICE), 3)
+        model.set_optimizer(
+        "Adam", 
+        lr=args.learning_rate, 
+        weight_decay=args.weight_decay, 
+        )
+        model_list = [lstmMODEL(args.nvars,args.hidden_size).to(DEVICE), lstmMODEL(args.nvars,args.hidden_size).to(DEVICE)]
+        model.setting_models(model_list, rmse_loss)
 
     print(f"Time for model creation: {time.time()- s_time}")
     # path create
@@ -327,6 +337,16 @@ def training_fold(fold_idx, data, augment_data, features, args, cache_dir):
         Tool.evalation(train_pred, new_data[1], "Train")
         result = Tool.evalation(test_pred, new_data[2]['y'], "Test")
         return result
+    elif args.model == 'voting':
+        train_loader, test_loader = get_data_loader(new_data[0], new_data[1], args.batch_size, features)
+        model.fit(train_loader, args.epochs)
+        train_pred = model.predict(new_data[0])
+        test_pred = model.predict(test_loader)
+
+        Tool.evalation(train_pred, new_data[1], "Train")
+        result = Tool.evalation(test_pred, new_data[2]['y'], "Test")
+        return result
+
     else:
         if args.manual_style == 'manual':
             eval_epoch(new_data[0], new_data[1], args.batch_size, epoch, DEVICE, model, optimizer, features)
@@ -361,7 +381,7 @@ def parser_aug():
     parser.add_argument('--individual', type=int, default=0, help='individual head; True 1 False 0')
     parser.add_argument('--target_window', type=int, default=96, help='prediction sequence length')
     parser.add_argument('--class_num', type=int, default=1, help='number of classe')
-    parser.add_argument('--model', default="lightgbm", choices=['transformer','lstm','rnn','S4',"TCN",'lightgbm','mlp', 'ensamble'],type=str, help='type of model')
+    parser.add_argument('--model', default="lightgbm", choices=['transformer','lstm','rnn','S4',"TCN",'lightgbm','mlp', 'ensamble', 'voting'],type=str, help='type of model')
     parser.add_argument('--learning_rate', default=1e-5, type=float, help='Learning rate')
     parser.add_argument('--weight_decay', default=1e-5, type=float, help='Weight decay')
     parser.add_argument('--epochs', default=10, type=int, help='Training epochs')
@@ -395,6 +415,7 @@ def parser_aug():
     parser.add_argument('--ensamble_ckpts',nargs='+',type=str, default=[])
     parser.add_argument('--ensamble_style', type=str, default='manual')
     parser.add_argument('--manual_weights',nargs='+',type=float, default=[1, 1, 1])
+    # parser.add_argument('--')
     args = parser.parse_args()
     return args
 
@@ -403,7 +424,7 @@ if __name__ == "__main__":
     args = parser_aug()
     s_time = time.time()
     set_random_seed(1)
-    data = pl.read_csv('data.csv')
+    data = pl.read_csv('testing_data.csv')
     cache_dir = pathlib.Path('cache')
 
     # if cache_dir.joinpath('get_augment_data_cache.pkl').exists():
