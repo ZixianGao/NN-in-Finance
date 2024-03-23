@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from dataset import EvalDataset
 from feature_engineer import *
-from model import EnsambleModel, loading_lstm, loading_transformer
+from model import EnsambleModel, loading_lstm, loading_transformer,loading_bagging,loading_voting,EnsembleModel,VotingEnsemble,BaggingEnsemble,get_models
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -53,6 +53,25 @@ def get_data_loader(test_data, batch_size, label=None):
     test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False)
 
     return test_loader
+
+def rmse_loss(predictions, targets):
+    predictions = predictions.squeeze()
+    mse = torch.mean((predictions - targets)**2)  # Compute Mean Squared Error
+    rmse = torch.sqrt(mse+1e-6)  # Compute square root to get RMSE
+    return rmse
+
+def ensemble_predict(model, data_loader, device):
+    preds = []
+    data_labels = []
+    for i, batch in tqdm(enumerate(data_loader)):
+            features = batch
+            train_features= features.to(device)
+            train_features= train_features.float()
+            outputs = model.predict(train_features)
+            preds.append(outputs.detach().cpu().numpy())
+            # print(preds.shape)
+    preds = np.concatenate(preds, axis=0)
+    return preds
 
 def eval_dl_model(test_data, model, args, label=None):
     test_loader = get_data_loader(test_data, args.batch_size, label)
@@ -108,17 +127,25 @@ def eval_model(test_data, features, args, cache_dir, label=None):
         file_name = pathlib.Path(cache_dir).joinpath("lightgbm.json")
         model = lgb.Booster(model_file=file_name)
     elif args.model == "ensemble":
-        model = EnsambleModel(args.ensamble_models, args.ensamble_ckpts, args, DEVICE, args.ensamble_style, args.manual_weights)
+        model = EnsembleModel(args.ensamble_models, args.ensamble_ckpts, args, DEVICE, args.ensamble_style, args.manual_weights)
+    elif args.model == "voting_ensemble":
+        model =loading_voting(args.ensamble_model_path)
+    elif args.model == "bagging_ensemble":   
+        model =loading_bagging(args.ensamble_model_path)
+        # model.set_optimizer("Adam", lr=args.learning_rate, weight_decay=args.weight_decay)
+        # model_list = get_models(args.ensamble_models, args.ensamble_ckpts, args, DEVICE)
+        # model.setting_models(model_list, rmse_loss)
     else:
         raise AssertionError(f"Unsupported model type: {args.model}")
 
-    if args.model == 'lightgbm':
+    if args.model in ['bagging_ensemble', 'voting_ensemble', 'lightgbm']:
         test_pred = model.predict(test_data[features])
         if label is not None:
             result = Tool.evalation(test_pred, label, "Test")
             return result
         else:
             return test_pred
+
     else:
         result = eval_dl_model(test_data, model, args, label)
         return result
@@ -135,8 +162,8 @@ def set_random_seed(seed: int):
 
 def parser_aug():
     parser = argparse.ArgumentParser(description='Evaluation')
-    parser.add_argument('--model', default="transformer",
-                        choices=['transformer', 'lstm', 'lightgbm', 'ensemble'], type=str,
+    parser.add_argument('--model', default="lstm",
+                        choices=['transformer', 'lstm', 'lightgbm', 'ensemble','voting_ensemble','bagging_ensemble'], type=str,
                         help='type of model')
     parser.add_argument('--ensemble_models', nargs='+', type=str, default=['transformers', 'lstm'])
     parser.add_argument('--ensemble_ckpts', nargs='+', type=str, default=[])
@@ -145,11 +172,14 @@ def parser_aug():
     parser.add_argument('--hidden_size', default=60, type=int, help='hidden_size')
     parser.add_argument('--batch_size', default=64, type=int, help='Batch size')
     parser.add_argument('--if_label', default=False, type=bool, help='whether have label and get r2 score')
-    parser.add_argument('--data_path', default='data.csv', type=str, help='Path to the data file')
+    parser.add_argument('--data_path', default='subset_data.csv', type=str, help='Path to the data file')
     parser.add_argument('--model_cache', default='model_ckpt', type=str, help='Path to the model checkpoint directory')
     parser.add_argument('--output_path', default='output.csv', type=str, help='Path to the output CSV file')
     parser.add_argument('--data_cache', default='cache', type=str, help='Path to the saved features')
     parser.add_argument('--random_seed', default=1, type=int, help='Random seed for reproducibility')
+    parser.add_argument('--ensamble_models',nargs='+',type=str, default=['transformer', 'lstm', 'lightgbm'])
+    parser.add_argument('--ensamble_model_path', type=str)
+
     args = parser.parse_args()
     return args
 
