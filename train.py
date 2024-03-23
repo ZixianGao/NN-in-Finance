@@ -13,6 +13,8 @@ import argparse
 import pathlib
 import lightgbm as lgb
 import time
+import pickle
+import gzip
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -261,7 +263,7 @@ def training_epoch(train_data, test_data, batch_size, epoch_idx, device, model, 
         result = Tool.evalation(final_outputs,final_targets, 'Test')
     return result, model
 
-def training_fold(fold_idx, data, augment_data, features, args):
+def training_fold(fold_idx, data, augment_data, features, args, cache_dir):
     augment_names = ['rev_data', 'shift_10_data', 'shift_rev_10_data']
     s_time = time.time()
     whole_data_size = len(data)
@@ -270,6 +272,12 @@ def training_fold(fold_idx, data, augment_data, features, args):
     train_data, test_data = data[: training_end_idx], data[training_end_idx: testing_end_idx]
     print(f"Time for data splitting: {time.time()- s_time}")
     # augment_training = augment_data[: training_end_idx]
+
+
+    
+
+    
+
     augment_training = {}
     for key in augment_data:
         augment_training[key] = augment_data[key][: training_end_idx]
@@ -284,7 +292,6 @@ def training_fold(fold_idx, data, augment_data, features, args):
     augment_training = data_set_concat(augment_training, augment_names, features+['y'])
     augment_training = pl.concat([train_data[features+['y']], augment_training])
 
-    s_time = time.time()
     if args.model == 'lightgbm':
         new_data = (augment_training[features], augment_training['y'], test_data)
     else:
@@ -322,7 +329,7 @@ def training_fold(fold_idx, data, augment_data, features, args):
         return result
     else:
         if args.manual_style == 'manual':
-            pass
+            eval_epoch(new_data[0], new_data[1], args.batch_size, epoch, DEVICE, model, optimizer, features)
         else:
             optimizer = optim.Adam(model.parameters(), lr=args.learning_rate,weight_decay=args.weight_decay)
             best_result = None
@@ -384,7 +391,7 @@ def parser_aug():
     parser.add_argument('--fold_idx', default=2, type=int, help='the time fold index')
     parser.add_argument('--ckpt_cache', type=str, default='models')
     parser.add_argument('--window_size', default=10, type=int)
-    parser.add_argument('--ensamble_models',nargs='+',type=str, default=['transformers', 'lstm', 'lightgbm'])
+    parser.add_argument('--ensamble_models',nargs='+',type=str, default=['transformers', 'lstm'])
     parser.add_argument('--ensamble_ckpts',nargs='+',type=str, default=[])
     parser.add_argument('--ensamble_style', type=str, default='manual')
     parser.add_argument('--manual_weights',nargs='+',type=float, default=[1, 1, 1])
@@ -397,10 +404,26 @@ if __name__ == "__main__":
     s_time = time.time()
     set_random_seed(1)
     data = pl.read_csv('data.csv')
+    cache_dir = pathlib.Path('cache')
+
+    # if cache_dir.joinpath('get_augment_data_cache.pkl').exists():
+    #     with open(cache_dir.joinpath('get_augment_data_cache.pkl'), 'rb') as fin:
+    #         augment_data, aug_features, aug_features_flat = pickle.load(fin)
+    # else:
+    #     with open(cache_dir.joinpath('get_augment_data_cache.pkl'), 'wb') as fin:
     augment_data, aug_features, aug_features_flat = get_augment_data(data)
-    data, features, art_targets = get_features(data)
+            # pickle.dump((augment_data, aug_features, aug_features_flat), fin)
+
+    if cache_dir.joinpath('get_features_cache.pkl').exists():
+        with open(cache_dir.joinpath('get_features_cache.pkl'), 'rb') as fin:
+            data, features, art_targets = pickle.load(fin)
+    else:
+        with open(cache_dir.joinpath('get_features_cache.pkl'), 'wb') as fin:
+            data, features, art_targets = get_features(data)
+            pickle.dump((data, features, art_targets), fin)
+
     print(f"Loading data: {time.time()-s_time}")
-    training_fold(args.fold_idx, data, augment_data, features, args)
+    training_fold(args.fold_idx, data, augment_data, features, args, cache_dir)
 
 
     exit()
