@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from dataset import EvalDataset
 from feature_engineer import *
-from model import EnsambleModel, loading_lstm, loading_transformer,loading_bagging,loading_voting,EnsembleModel,VotingEnsemble,BaggingEnsemble,get_models
+from model import EnsambleModel, loading_lstm, loading_transformer,loading_bagging,loading_voting,VotingEnsemble,BaggingEnsemble,get_models
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -32,9 +32,10 @@ def get_data(data, cache_dir, label=False):
         with open(cache_dir.joinpath('get_features_cache.pkl'), 'wb') as fin:
             data, features, art_targets = get_features(data)
             pickle.dump((data, features, art_targets), fin)
-
+    
     for feature in features:
-        data = normal_test_feature(data, feature)
+        data, std, min_val, max_val, q001, q999 = normal_feature(data, feature)
+        data = normal_test_feature(data, feature, std, min_val, max_val, q001, q999)
 
     if label:
         label_data = data['y']
@@ -127,7 +128,7 @@ def eval_model(test_data, features, args, cache_dir, label=None):
         file_name = pathlib.Path(cache_dir).joinpath("lightgbm.json")
         model = lgb.Booster(model_file=file_name)
     elif args.model == "ensemble":
-        model = EnsembleModel(args.ensamble_models, args.ensamble_ckpts, args, DEVICE, args.ensamble_style, args.manual_weights)
+        model = EnsambleModel(args.ensamble_models, args.ensamble_ckpts, args, DEVICE, args.ensamble_style, args.manual_weights)
     elif args.model == "voting_ensemble":
         model =loading_voting(args.ensamble_model_path)
     elif args.model == "bagging_ensemble":   
@@ -179,6 +180,9 @@ def parser_aug():
     parser.add_argument('--random_seed', default=1, type=int, help='Random seed for reproducibility')
     parser.add_argument('--ensamble_models',nargs='+',type=str, default=['transformer', 'lstm', 'lightgbm'])
     parser.add_argument('--ensamble_model_path', type=str)
+    parser.add_argument('--ensamble_ckpts', nargs='+', type=str, default=[])
+    parser.add_argument('--ensamble_style', type=str, default='manual_weight')
+    parser.add_argument('--manual_weights',nargs='+',type=float, default=[1, 1, 1])
 
     args = parser.parse_args()
     return args

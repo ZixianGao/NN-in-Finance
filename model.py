@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import lightgbm as lgb
 import numpy as np
-from torchensemble import VotingRegressor
+from torchensemble import VotingRegressor, BaggingRegressor
 from torchensemble._base import torchensemble_model_doc
 from torchensemble.utils import set_module, io
 from torchensemble.utils import operator as op
@@ -112,7 +112,7 @@ class lstmMODEL(nn.Module):
     def forward(self, x):
         out, _ = self.lstm(x)
         predictions = self.fc(out).squeeze()
-        return predictions * self.model_weight
+        return (predictions * self.model_weight).squeeze()
 
    
 class transMODEL(nn.Module):
@@ -129,7 +129,7 @@ class transMODEL(nn.Module):
 
         out = self.transformer_encoder(x)
         out = self.fc(out)  # 取最后一个时间步的输出作为预测
-        return out * self.model_weight
+        return (out * self.model_weight).squeeze()
 
 class mlp(nn.Module):
     def __init__(self, input_size, hidden_size, output_size, dr=0.0):
@@ -243,7 +243,7 @@ def loading_lightgmb(file_name, args):
 
 def loading_transformer(file_name, args):
     model = transMODEL(args.nvars,args.hidden_size)
-    model.load_state_dict(torch.load(file_name))
+    model.load_state_dict(torch.load(file_name), strict=False)
     return model
 
 def loading_lstm(file_name, args):
@@ -278,15 +278,17 @@ class EnsambleModel(nn.Module):
     def __init__(self, ensamble_models, ensamble_ckpt, args, device, 
                  ensamble_style, manual_weight) -> None:
         super().__init__()
+        # print(manual_weight, ensamble_ckpt, ensamble_models)
         self.models = {mm: LOADING_FUNC_MAPPING[mm](mp, args) for mm, mp in zip(ensamble_models, ensamble_ckpt)}
         self.models = {mm: self.models[mm].to(device) if hasattr(self.models[mm], 'to') else self.models[mm] for mm in self.models}
         self.ensamble_style = ensamble_style
         if ensamble_style == 'manual_weight':
-            manual_weight = np.mean(manual_weight).tolist()
+            manual_weight = (np.array(manual_weight) / np.sum(manual_weight)).tolist()
             self.manual_weight = {mm: mw for mm, mw in zip(ensamble_models, manual_weight)}
         # self.requires_grad_(False)
-        self.models = [self.models[mm].requires_grad_(False) if hasattr(self.models[mm], 'requires_grad_') else self.models[mm] for mm in self.models] # frozen models
-        self.models = [enable_model_weight(mm) for mm in self.models]
+        self.models = {mm: self.models[mm].requires_grad_(False) if hasattr(self.models[mm], 'requires_grad_') else self.models[mm] for mm in self.models} # frozen models
+        self.models = {mm: enable_model_weight(self.models[mm]) for mm in self.models}
+        print(self.manual_weight)
 
     def forward(self, x):
         # default_weight = 1/len(self.models)
@@ -305,7 +307,159 @@ def get_models(ensamble_models, ensamble_ckpt, args, device):
     models = [models[mm].requires_grad_(False) if hasattr(models[mm], 'requires_grad_') else models[mm] for mm in models] # frozen models
     models = [enable_model_weight(mm) for mm in models]
 
-class VotingEnsamble(VotingRegressor):
+
+class VotingEnsemble(VotingRegressor):
+
+    def setting_models(self, estimate_models, loss_fn):
+        self.estimate_models = estimate_models
+        self.loss_fn = loss_fn
+
+    @torchensemble_model_doc(
+        """Implementation on the training stage of VotingRegressor.""", "fit"
+    )
+    def fit(
+        self,
+        train_loader,
+        epochs=100,
+        log_interval=100,
+        test_loader=None,
+        save_model=True,
+        save_dir=None,
+    ):
+
+        self._validate_parameters(epochs, log_interval)
+        self.n_outputs = self._decide_n_outputs(train_loader)
+
+        # Instantiate a pool of base estimators, optimizers, and schedulers.
+        estimators = self.estimate_models
+        # for _ in range(self.n_estimators):
+        #     estimators.append(self._make_estimator())
+        self.n_estimators = len(estimators)
+
+        optimizers = []
+        for i in range(self.n_estimators):
+            optimizers.append(
+                set_module.set_optimizer(
+                    estimators[i], self.optimizer_name, **self.optimizer_args
+                )
+            )
+
+        if self.use_scheduler_:
+            scheduler_ = set_module.set_scheduler(
+                optimizers[0], self.scheduler_name, **self.scheduler_args
+            )
+
+        # Check the training criterion
+        # if not hasattr(self, "_criterion"):
+        #     self._criterion = nn.MSELoss()
+        self._criterion = self.loss_fn
+
+        # Utils
+        best_loss = float("inf")
+
+        # Internal helper function on pseudo forward
+        def _forward(estimators, *x):
+            outputs = [estimator(*x) for estimator in estimators]
+            pred = op.average(outputs)
+
+            return pred
+
+        # Maintain a pool of workers
+        with Parallel(n_jobs=self.n_jobs) as parallel:
+
+            # Training loop
+            for epoch in range(epochs):
+                self.train()
+
+                if self.use_scheduler_:
+                    if self.scheduler_name == "ReduceLROnPlateau":
+                        cur_lr = optimizers[0].param_groups[0]["lr"]
+                    else:
+                        cur_lr = scheduler_.get_last_lr()[0]
+                else:
+                    cur_lr = None
+
+                if self.n_jobs and self.n_jobs > 1:
+                    msg = "Parallelization on the training epoch: {:03d}"
+                    self.logger.info(msg.format(epoch))
+
+                rets = parallel(
+                    delayed(_parallel_fit_per_epoch)(
+                        train_loader,
+                        estimator,
+                        cur_lr,
+                        optimizer,
+                        self._criterion,
+                        idx,
+                        epoch,
+                        log_interval,
+                        self.device,
+                        False,
+                    )
+                    for idx, (estimator, optimizer) in enumerate(
+                        zip(estimators, optimizers)
+                    )
+                )
+
+                estimators, optimizers, losses = [], [], []
+                for estimator, optimizer, loss in rets:
+                    estimators.append(estimator)
+                    optimizers.append(optimizer)
+                    losses.append(loss)
+
+                # Validation
+                if test_loader:
+                    self.eval()
+                    with torch.no_grad():
+                        val_loss = 0.0
+                        for _, elem in enumerate(test_loader):
+                            data, target = io.split_data_target(
+                                elem, self.device
+                            )
+                            output = _forward(estimators, *data)
+                            val_loss += self._criterion(output, target)
+                        val_loss /= len(test_loader)
+
+                        if val_loss < best_loss:
+                            best_loss = val_loss
+                            self.estimators_ = nn.ModuleList()
+                            self.estimators_.extend(estimators)
+                            if save_model:
+                                io.save(self, save_dir, self.logger)
+
+                        msg = (
+                            "Epoch: {:03d} | Validation Loss:"
+                            " {:.5f} | Historical Best: {:.5f}"
+                        )
+                        self.logger.info(
+                            msg.format(epoch, val_loss, best_loss)
+                        )
+                        if self.tb_logger:
+                            self.tb_logger.add_scalar(
+                                "voting/Validation_Loss", val_loss, epoch
+                            )
+                # No validation
+                else:
+                    self.estimators_ = nn.ModuleList()
+                    self.estimators_.extend(estimators)
+                    if save_model:
+                        io.save(self, save_dir, self.logger)
+
+                # Update the scheduler
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+
+                    if self.use_scheduler_:
+                        if self.scheduler_name == "ReduceLROnPlateau":
+                            if test_loader:
+                                scheduler_.step(val_loss)
+                            else:
+                                loss = torch.mean(torch.tensor(losses))
+                                scheduler_.step(loss)
+                        else:
+                            scheduler_.step()
+
+class BaggingEnsemble(BaggingRegressor):
 
     def setting_models(self, estimate_models, loss_fn):
         self.estimate_models = estimate_models

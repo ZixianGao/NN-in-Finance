@@ -230,6 +230,11 @@ def training_fold(fold_idx, data, augment_data, features, args, cache_dir):
         )
         model_list = get_models(args.ensemble_models, args.ensemble_ckpts, args, DEVICE)
         model.setting_models(model_list, rmse_loss)
+        
+        # loading
+        model_weight_dict = torch.load(ckpt_model_path.joinpath('model_weight.pth'))
+        model.load_state_dict(model_weight_dict, strict=False)
+        
     elif args.model == 'bagging':
         model = BaggingEnsemble(args.ensemble_models, args.ensemble_num)
         model.set_optimizer(
@@ -262,7 +267,14 @@ def training_fold(fold_idx, data, augment_data, features, args, cache_dir):
     elif args.model == 'voting':
         train_loader, test_loader = get_data_loader(new_data[0], new_data[1], args.batch_size, features)
         model.fit(train_loader, args.epochs)
-        torch.save(model, ckpt_model_path.joinpath("model_best.pth"))
+        # torch.save(model, ckpt_model_path.joinpath("model_best.pth"))
+        dump_dict = {}
+        with torch.no_grad():
+            for pn, p in model.named_parameters():
+                if "model_weight" in pn:
+                    dump_dict[pn] = p
+        torch.save(dump_dict, ckpt_model_path.joinpath('model_weight.pth'))
+        
         train_pred, train_label = ensemble_predict(model, train_loader, DEVICE)
         test_pred, test_label = ensemble_predict(model, test_loader, DEVICE)
 
@@ -275,7 +287,13 @@ def training_fold(fold_idx, data, augment_data, features, args, cache_dir):
     elif args.model == 'bagging':
         train_loader, test_loader = get_data_loader(new_data[0], new_data[1], args.batch_size, features)
         model.fit(train_loader, args.epochs)
-        torch.save(model, ckpt_model_path.joinpath("model_best.pth"))
+        dump_dict = {}
+        with torch.no_grad():
+            for pn, p in model.named_parameters():
+                if "model_weight" in pn:
+                    dump_dict[pn] = p
+        torch.save(dump_dict, ckpt_model_path.joinpath('model_weight.pth'))
+        
         train_pred, train_label = ensemble_predict(model, train_loader, DEVICE)
         test_pred, test_label = ensemble_predict(model, test_loader, DEVICE)
 

@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from dataset import EvalDataset
 from feature_engineer import *
-from model import EnsambleModel, loading_lstm, loading_transformer,loading_bagging,loading_voting,EnsembleModel,VotingEnsemble,BaggingEnsemble
+from model import EnsambleModel, loading_lstm, loading_transformer,loading_bagging,loading_voting,VotingEnsemble,BaggingEnsemble
 
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -127,11 +127,25 @@ def eval_model(test_data, features, args, cache_dir, label=None):
         file_name = pathlib.Path(cache_dir).joinpath("lightgbm.json")
         model = lgb.Booster(model_file=file_name)
     elif args.model == "ensemble":
-        model = EnsembleModel(args.ensamble_models, args.ensamble_ckpts, args, DEVICE, args.ensamble_style, args.manual_weights)
+        model = EnsambleModel(args.ensamble_models, args.ensamble_ckpts, args, DEVICE, args.ensamble_style, args.manual_weights)
     elif args.model == "voting_ensemble":
         model =loading_voting(args.ensamble_model_path)
     elif args.model == "bagging_ensemble":   
         model =loading_bagging(args.ensamble_model_path)
+        
+        model = VotingEnsemble(args.ensemble_models, args.ensemble_num)
+        model.set_optimizer(
+        "Adam", 
+        lr=args.learning_rate, 
+        weight_decay=args.weight_decay, 
+        )
+        model_list = get_models(args.ensemble_models, args.ensemble_ckpts, args, DEVICE)
+        model.setting_models(model_list, rmse_loss)
+
+        # loading
+        model_weight_dict = torch.load(ckpt_model_path.joinpath('model_weight.pth'))
+        model.load_state_dict(model_weight_dict, strict=False)
+        
         # model.set_optimizer("Adam", lr=args.learning_rate, weight_decay=args.weight_decay)
         # model_list = get_models(args.ensamble_models, args.ensamble_ckpts, args, DEVICE)
         # model.setting_models(model_list, rmse_loss)
