@@ -262,7 +262,7 @@ def training_fold(fold_idx, data, augment_data, features, args, cache_dir):
     elif args.model == 'voting':
         train_loader, test_loader = get_data_loader(new_data[0], new_data[1], args.batch_size, features)
         model.fit(train_loader, args.epochs)
-
+        torch.save(model, ckpt_model_path.joinpath("model_best.pth"))
         train_pred, train_label = ensemble_predict(model, train_loader, DEVICE)
         test_pred, test_label = ensemble_predict(model, test_loader, DEVICE)
 
@@ -275,7 +275,7 @@ def training_fold(fold_idx, data, augment_data, features, args, cache_dir):
     elif args.model == 'bagging':
         train_loader, test_loader = get_data_loader(new_data[0], new_data[1], args.batch_size, features)
         model.fit(train_loader, args.epochs)
-
+        torch.save(model, ckpt_model_path.joinpath("model_best.pth"))
         train_pred, train_label = ensemble_predict(model, train_loader, DEVICE)
         test_pred, test_label = ensemble_predict(model, test_loader, DEVICE)
 
