@@ -84,7 +84,7 @@ class rnnMODEL(nn.Module):
         # x = x.unsqueeze(1)
         out, _ = self.lstm(x)
         out = self.fc(out)  # 取最后一个时间步的输出作为预测
-        return out
+        return out * self.model_weight
 
 
 # class lstmMODEL(nn.Module):
@@ -112,7 +112,7 @@ class lstmMODEL(nn.Module):
     def forward(self, x):
         out, _ = self.lstm(x)
         predictions = self.fc(out).squeeze()
-        return predictions
+        return predictions * self.model_weight
 
    
 class transMODEL(nn.Module):
@@ -129,7 +129,7 @@ class transMODEL(nn.Module):
 
         out = self.transformer_encoder(x)
         out = self.fc(out)  # 取最后一个时间步的输出作为预测
-        return out
+        return out * self.model_weight
 
 class mlp(nn.Module):
     def __init__(self, input_size, hidden_size, output_size, dr=0.0):
@@ -141,7 +141,7 @@ class mlp(nn.Module):
         self.model_weight = nn.Parameter(torch.tensor(1.))
  
     def forward(self, input):
-        return self.linear2(self.relu(self.drop(self.linear1(input))))
+        return self.linear2(self.relu(self.drop(self.linear1(input)))) * self.model_weight
     
 
 
@@ -236,7 +236,7 @@ class lgbModule(nn.Module):
         lgb_input = np.reshape(lgb_input,(-1,z))
         pred = self.lgb_model.predict(lgb_input)
         pred = np.reshape(np.squeeze(pred),(h,y))
-        return torch.from_numpy(pred).to(x.device)
+        return torch.from_numpy(pred).to(x.device) * self.model_weight
 
 def loading_lightgmb(file_name, args):
     return lgbModule(lgb.Booster(model_file=file_name))
