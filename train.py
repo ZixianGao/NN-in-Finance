@@ -6,7 +6,7 @@ import torch
 import numpy as np
 from tqdm import tqdm
 from TCnet_model.ModernTCN import ModernTCN
-from model import lstmMODEL,transMODEL,rnnMODEL,S4Model,mlp, EnsambleModel, VotingEnsamble
+from model import lstmMODEL,transMODEL,rnnMODEL,S4Model,mlp, EnsambleModel, VotingEnsamble, enable_model_weight
 from feature_engineer import *
 import random
 import argparse
@@ -264,6 +264,21 @@ def training_epoch(train_data, test_data, batch_size, epoch_idx, device, model, 
         result = Tool.evalation(final_outputs,final_targets, 'Test')
     return result, model
 
+def ensemble_predict(model, data_loader, device):
+    preds = []
+    data_labels = []
+    for i, batch in tqdm(enumerate(data_loader)):
+            features, labels = batch
+            train_features,train_labels = features.to(device), labels.to(device)
+            train_features,train_labels = train_features.float(), train_labels.float()
+            outputs = model.predict(train_features)
+            preds.append(outputs.detach().cpu().numpy())
+            data_labels.append(train_labels.detach().cpu().numpy())
+            # print(preds.shape)
+    preds = np.concatenate(preds, axis=0)
+    data_labels = np.concatenate(data_labels, axis=0)
+    return preds, data_labels
+
 def training_fold(fold_idx, data, augment_data, features, args, cache_dir):
     augment_names = ['rev_data', 'shift_10_data', 'shift_rev_10_data']
     s_time = time.time()
@@ -315,7 +330,8 @@ def training_fold(fold_idx, data, augment_data, features, args, cache_dir):
         lr=args.learning_rate, 
         weight_decay=args.weight_decay, 
         )
-        model_list = [lstmMODEL(args.nvars,args.hidden_size).to(DEVICE), lstmMODEL(args.nvars,args.hidden_size).to(DEVICE)]
+        model_list = [lstmMODEL(args.nvars,args.hidden_size).to(DEVICE).requires_grad_(False), lstmMODEL(args.nvars,args.hidden_size).to(DEVICE).requires_grad_(False)]
+        model_list = [enable_model_weight(mm) for mm in model_list]
         model.setting_models(model_list, rmse_loss)
 
     print(f"Time for model creation: {time.time()- s_time}")
@@ -340,11 +356,16 @@ def training_fold(fold_idx, data, augment_data, features, args, cache_dir):
     elif args.model == 'voting':
         train_loader, test_loader = get_data_loader(new_data[0], new_data[1], args.batch_size, features)
         model.fit(train_loader, args.epochs)
-        train_pred = model.predict(new_data[0])
-        test_pred = model.predict(test_loader)
 
-        Tool.evalation(train_pred, new_data[1], "Train")
-        result = Tool.evalation(test_pred, new_data[2]['y'], "Test")
+        
+        
+        train_pred, train_label = ensemble_predict(model, train_loader, DEVICE)
+        test_pred, test_label = ensemble_predict(model, test_loader, DEVICE)
+        # train_pred = model.predict(train_loader)
+        # test_pred = model.predict(test_loader)
+
+        Tool.evalation(train_pred, train_label, "Train")
+        result = Tool.evalation(test_pred, test_label, "Test")
         return result
 
     else:
@@ -384,7 +405,7 @@ def parser_aug():
     parser.add_argument('--model', default="lightgbm", choices=['transformer','lstm','rnn','S4',"TCN",'lightgbm','mlp', 'ensamble', 'voting'],type=str, help='type of model')
     parser.add_argument('--learning_rate', default=1e-5, type=float, help='Learning rate')
     parser.add_argument('--weight_decay', default=1e-5, type=float, help='Weight decay')
-    parser.add_argument('--epochs', default=10, type=int, help='Training epochs')
+    parser.add_argument('--epochs', default=1, type=int, help='Training epochs')
     parser.add_argument('--batch_size', default=64, type=int, help='Batch size')
     parser.add_argument('--n_layers', default=1, type=int, help='Number of layers')
     # parser.add_argument('--model', default="rnn", choices=['transformer','lstm','rnn','S4'],type=str, help='type of model')
