@@ -339,9 +339,7 @@ def get_features(input_data):
     return data, features, targets
 
 
-def normal_test_feature(df, feature):
-    q001 = df[feature].quantile(0.01)
-    q999 = df[feature].quantile(0.99)
+def normal_test_feature(df, feature, train_std, train_min, train_max, q001, q999):
 
     df = df.with_columns(
         pl.when(pl.col(feature) < q001).then(
@@ -351,23 +349,17 @@ def normal_test_feature(df, feature):
         pl.when(pl.col(feature) > q999).then(
             q999).otherwise(pl.col(feature)).alias(feature)
     )
-
-    std = df[feature].std()
     # mean = df[feature].mean()
     mean = 0
     df = df.with_columns(
-        ((pl.col(feature) - mean) / std).alias(feature)
+        ((pl.col(feature) - mean) / train_std).alias(feature)
     )
 
     if ("log" in feature or "nom" in feature):
-        min = pl.col(feature).min()
-        max = pl.col(feature).max()
         df = df.with_columns(
-            ((pl.col(feature) - min) / (max - min) * 2).alias(feature)
+            ((pl.col(feature) - train_min) / (train_max - train_min) * 2).alias(feature)
         )
-        return df
     return df
-
 
 def normal_feature(df, feature):
     q001 = df[feature].quantile(0.01)
