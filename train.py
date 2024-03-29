@@ -237,7 +237,7 @@ def training_epoch(train_data, test_data, batch_size, epoch_idx, device, model, 
 
     print("epoch:{}".format(epoch_idx+1))
     Tool.evalation(train_outputs, train_targets, 'Train')
-
+    
     with torch.no_grad():
         final_targets = []
         final_outputs = []
@@ -330,7 +330,7 @@ def training_fold(fold_idx, data, augment_data, features, args, cache_dir):
         lr=args.learning_rate, 
         weight_decay=args.weight_decay, 
         )
-        model_list = [lstmMODEL(args.nvars,args.hidden_size).to(DEVICE).requires_grad_(False), lstmMODEL(args.nvars,args.hidden_size).to(DEVICE).requires_grad_(False)]
+        model_list = [lstmMODEL(args.nvars,args.hidden_size).to(DEVICE), lstmMODEL(args.nvars,args.hidden_size).to(DEVICE)]
         model_list = [enable_model_weight(mm) for mm in model_list]
         model.setting_models(model_list, rmse_loss)
 
